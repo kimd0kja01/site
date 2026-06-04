@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (!$existingPseudo && !$existingMail) {
                         $mdp_hash = password_hash($mdp, PASSWORD_DEFAULT);
 
-                        $stmt = $pdo->prepare('INSERT INTO User (Nom, Prénom, Mail) VALUES (?, ?, ?)');
+                        $stmt = $pdo->prepare('INSERT INTO User (Nom, prenom, Mail) VALUES (?, ?, ?)');
                         $stmt->execute([$nom, $prenom, $mail]);
 
                         $idUser = $pdo->lastInsertId();
