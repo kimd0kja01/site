@@ -8,44 +8,109 @@ include 'functions.php';
 $error = '';
 $success = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+try {
+    $pdo = pdo_connect_mysql();
+} catch (PDOException $e) {
+    $error = 'Erreur BD : ' . $e->getMessage();
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
     $nom = trim($_POST['nom'] ?? '');
-    $prenom = trim($_POST['Prénom'] ?? '');
+    $prenom = trim($_POST['prenom'] ?? '');
     $mail = trim($_POST['mail'] ?? '');
     $pseudo = trim($_POST['pseudo'] ?? '');
     $mdp = $_POST['mdp'] ?? '';
     $confirm_mdp = $_POST['confirm_mdp'] ?? '';
+    $numUser = trim($_POST['numUser'] ?? '');
 
-    if (!empty($nom) && !empty($prenom) && !empty($mail) && !empty($pseudo) && !empty($mdp) && !empty($confirm_mdp)) {
+    if (
+        !empty($nom) &&
+        !empty($prenom) &&
+        !empty($mail) &&
+        !empty($pseudo) &&
+        !empty($numUser) &&
+        !empty($mdp) &&
+        !empty($confirm_mdp)
+    ) {
         if ($mdp === $confirm_mdp) {
             if (strlen($pseudo) >= 3 && strlen($mdp) >= 6 && filter_var($mail, FILTER_VALIDATE_EMAIL)) {
                 try {
-                    $pdo = pdo_connect_mysql();
-
-                    $stmt = $pdo->prepare('SELECT idSecurite FROM Sécurité WHERE pseudo = ?');
+                    // Vérifie si le pseudo existe déjà
+                    $stmt = $pdo->prepare('SELECT idSecurite FROM `Sécurité` WHERE pseudo = ?');
                     $stmt->execute([$pseudo]);
                     $existingPseudo = $stmt->fetch();
 
-                    $stmt = $pdo->prepare('SELECT idUser FROM User WHERE Mail = ?');
+                    // Vérifie si le mail existe déjà
+                    $stmt = $pdo->prepare('SELECT idUser FROM `User` WHERE Mail = ?');
                     $stmt->execute([$mail]);
                     $existingMail = $stmt->fetch();
 
                     if (!$existingPseudo && !$existingMail) {
-                        $mdp_hash = password_hash($mdp, PASSWORD_DEFAULT);
+                        $pdo->beginTransaction();
 
-                        $stmt = $pdo->prepare('INSERT INTO User (Nom, prenom, Mail) VALUES (?, ?, ?)');
-                        $stmt->execute([$nom, $prenom, $mail]);
+                        /*
+                            1. Création automatique de la serre.
+                            idUser est temporairement NULL car l'utilisateur
+                            n'existe pas encore.
+                        */
+                        $adrSerre = 'Adresse non renseignée';
 
+                        $stmt = $pdo->prepare('
+                            INSERT INTO `Serre` (adrSerre, idUser)
+                            VALUES (?, NULL)
+                        ');
+                        $stmt->execute([$adrSerre]);
+
+                        // Récupération de l'id de la serre créée
+                        $idSerre = $pdo->lastInsertId();
+
+                        /*
+                            2. Création de l'utilisateur avec la serre générée.
+                            Ici idSerre n'est pas NULL, donc ça respecte ta table User.
+                        */
+                        $stmt = $pdo->prepare('
+                            INSERT INTO `User` (Nom, `Prénom`, Mail, numUser, idSerre)
+                            VALUES (?, ?, ?, ?, ?)
+                        ');
+                        $stmt->execute([$nom, $prenom, $mail, $numUser, $idSerre]);
+
+                        // Récupération de l'id de l'utilisateur créé
                         $idUser = $pdo->lastInsertId();
 
-                        $stmt = $pdo->prepare('INSERT INTO Sécurité (pseudo, mdp, idUser) VALUES (?, ?, ?)');
+                        /*
+                            3. Mise à jour de la serre pour lui ajouter son utilisateur.
+                        */
+                        $stmt = $pdo->prepare('
+                            UPDATE `Serre`
+                            SET idUser = ?
+                            WHERE idSerre = ?
+                        ');
+                        $stmt->execute([$idUser, $idSerre]);
+
+                        /*
+                            4. Création des identifiants de connexion.
+                        */
+                        $mdp_hash = password_hash($mdp, PASSWORD_DEFAULT);
+
+                        $stmt = $pdo->prepare('
+                            INSERT INTO `Sécurité` (pseudo, mdp, idUser)
+                            VALUES (?, ?, ?)
+                        ');
                         $stmt->execute([$pseudo, $mdp_hash, $idUser]);
 
-                        $success = 'Compte créé avec succès ! Vous pouvez maintenant vous connecter.';
+                        $pdo->commit();
+
+                        $success = 'Compte créé avec succès ! Une serre a été générée automatiquement. Vous pouvez maintenant vous connecter.';
+
+                        $_POST = [];
                     } else {
                         $error = 'Ce pseudo ou cette adresse mail est déjà utilisée.';
                     }
                 } catch (PDOException $e) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+
                     $error = 'Erreur BD : ' . $e->getMessage();
                 }
             } else {
@@ -59,6 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 ?>
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -68,58 +134,111 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link rel="stylesheet" href="login.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌾</text></svg>">
 </head>
+
 <body>
     <img src="/views/image2.png" alt="M.A.N.A Logo" class="logo">
-    
+
     <div class="container">
-        
         <div class="form-card">
             <h1>Inscription</h1>
+
             <?php if ($error): ?>
                 <div class="error-message"><?= htmlspecialchars($error) ?></div>
             <?php endif; ?>
+
             <?php if ($success): ?>
                 <div class="success-message"><?= htmlspecialchars($success) ?></div>
             <?php endif; ?>
-            
+
             <form method="POST" action="">
                 <div class="form-group">
                     <label for="nom">Nom</label>
                     <div class="input-wrapper">
                         <span class="input-icon">📝</span>
-                        <input type="text" id="nom" name="nom" placeholder="Entrez votre nom" value="<?= htmlspecialchars($_POST['nom'] ?? '') ?>" required>
+                        <input 
+                            type="text" 
+                            id="nom" 
+                            name="nom" 
+                            placeholder="Entrez votre nom" 
+                            value="<?= htmlspecialchars($_POST['nom'] ?? '') ?>" 
+                            required
+                        >
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="prenom">Prénom</label>
                     <div class="input-wrapper">
                         <span class="input-icon">📝</span>
-                        <input type="text" id="prenom" name="prenom" placeholder="Entrez votre prénom" value="<?= htmlspecialchars($_POST['prenom'] ?? '') ?>" required>
+                        <input 
+                            type="text" 
+                            id="prenom" 
+                            name="prenom" 
+                            placeholder="Entrez votre prénom" 
+                            value="<?= htmlspecialchars($_POST['prenom'] ?? '') ?>" 
+                            required
+                        >
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="mail">Adresse mail</label>
                     <div class="input-wrapper">
                         <span class="input-icon">📧</span>
-                        <input type="email" id="mail" name="mail" placeholder="Entrez votre adresse mail" value="<?= htmlspecialchars($_POST['mail'] ?? '') ?>" required>
+                        <input 
+                            type="email" 
+                            id="mail" 
+                            name="mail" 
+                            placeholder="Entrez votre adresse mail" 
+                            value="<?= htmlspecialchars($_POST['mail'] ?? '') ?>" 
+                            required
+                        >
                     </div>
                 </div>
-                
+
+                <div class="form-group">
+                    <label for="numUser">Numéro de téléphone</label>
+                    <div class="input-wrapper">
+                        <span class="input-icon">📱</span>
+                        <input 
+                            type="tel" 
+                            id="numUser" 
+                            name="numUser" 
+                            placeholder="Entrez votre numéro de téléphone" 
+                            value="<?= htmlspecialchars($_POST['numUser'] ?? '') ?>" 
+                            required
+                        >
+                    </div>
+                </div>
+
                 <div class="form-group">
                     <label for="pseudo">Pseudo</label>
                     <div class="input-wrapper">
                         <span class="input-icon">👤</span>
-                        <input type="text" id="pseudo" name="pseudo" placeholder="Choisissez votre pseudo" value="<?= htmlspecialchars($_POST['pseudo'] ?? '') ?>" required minlength="3">
+                        <input 
+                            type="text" 
+                            id="pseudo" 
+                            name="pseudo" 
+                            placeholder="Choisissez votre pseudo" 
+                            value="<?= htmlspecialchars($_POST['pseudo'] ?? '') ?>" 
+                            required 
+                            minlength="3"
+                        >
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="mdp">Mot de passe</label>
                     <div class="input-wrapper">
                         <span class="input-icon">🔒</span>
-                        <input type="password" id="mdp" name="mdp" placeholder="Choisissez un mot de passe" required minlength="6">
+                        <input 
+                            type="password" 
+                            id="mdp" 
+                            name="mdp" 
+                            placeholder="Choisissez un mot de passe" 
+                            required 
+                            minlength="6"
+                        >
                     </div>
                 </div>
 
@@ -127,14 +246,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label for="confirm_mdp">Confirmer le mot de passe</label>
                     <div class="input-wrapper">
                         <span class="input-icon">🔒</span>
-                        <input type="password" id="confirm_mdp" name="confirm_mdp" placeholder="Confirmez votre mot de passe" required minlength="6">
+                        <input 
+                            type="password" 
+                            id="confirm_mdp" 
+                            name="confirm_mdp" 
+                            placeholder="Confirmez votre mot de passe" 
+                            required 
+                            minlength="6"
+                        >
                     </div>
                 </div>
-                
+
                 <button type="submit" class="btn-signup">Créer un compte</button>
             </form>
 
-            <p class="login-hint">Déjà inscrit ? <a href="index.php">Se connecter</a></p>
+            <p class="login-hint">
+                Déjà inscrit ? <a href="index.php">Se connecter</a>
+            </p>
         </div>
 
         <div class="footer-text">
